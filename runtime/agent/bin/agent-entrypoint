@@ -1,0 +1,230 @@
+#!/bin/sh
+set -eu
+
+umask 0002
+
+worker_token="${CODEXBOT_WORKER_TOKEN:?CODEXBOT_WORKER_TOKEN is required}"
+unset CODEXBOT_WORKER_TOKEN
+
+profile_root=/var/lib/codexbot/profile
+codex_home=/home/agent/.codex
+kasm_home="${KASMVNC_HOME:-${profile_root}/kasmvnc}"
+kasm_config="${kasm_home}/.vnc/kasmvnc.yaml"
+kasm_password_file="${kasm_home}/.kasmpasswd"
+kasm_certificate="${kasm_home}/.vnc/certificate.pem"
+kasm_private_key="${kasm_home}/.vnc/private-key.pem"
+kasm_display="${KASMVNC_DISPLAY:-:1}"
+kasm_geometry="${KASMVNC_GEOMETRY:-1440x900}"
+kasm_port="${KASMVNC_PORT:-6901}"
+kasm_user="${KASM_USER:-viewer}"
+
+# Runtime-manager derives one per-agent credential. Dedicated secret files are
+# preferred, while these compatibility assignments keep local/MVP deployments
+# interoperable with KASM_USER/KASM_PASSWORD.
+if [ -n "${KASM_PASSWORD:-}" ]; then
+    : "${KASMVNC_VIEWER_PASSWORD:=${KASM_PASSWORD}}"
+    : "${KASMVNC_OWNER_PASSWORD:=${KASM_PASSWORD}}"
+    export KASMVNC_VIEWER_PASSWORD KASMVNC_OWNER_PASSWORD
+fi
+
+read_secret() {
+    variable_name="$1"
+    file_variable_name="$2"
+    value="$(eval "printf '%s' \"\${${variable_name}:-}\"")"
+    file="$(eval "printf '%s' \"\${${file_variable_name}:-}\"")"
+
+    if [ -n "${value}" ] && [ -n "${file}" ]; then
+        echo "only one of ${variable_name} and ${file_variable_name} may be set" >&2
+        return 1
+    fi
+    if [ -n "${file}" ]; then
+        if [ ! -r "${file}" ]; then
+            echo "secret file for ${file_variable_name} is not readable" >&2
+            return 1
+        fi
+        value="$(tr -d '\r\n' < "${file}")"
+    fi
+    if [ -z "${value}" ]; then
+        echo "${variable_name} or ${file_variable_name} is required" >&2
+        return 1
+    fi
+    if [ "${#value}" -lt 12 ]; then
+        echo "${variable_name} must contain at least 12 characters" >&2
+        return 1
+    fi
+    printf '%s' "${value}"
+}
+
+case "${kasm_geometry}" in
+    *x*) ;;
+    *) echo "KASMVNC_GEOMETRY must use WIDTHxHEIGHT format" >&2; exit 1 ;;
+esac
+case "${kasm_port}" in
+    *[!0-9]*|'') echo "KASMVNC_PORT must be numeric" >&2; exit 1 ;;
+esac
+
+viewer_password="$(read_secret KASMVNC_VIEWER_PASSWORD KASMVNC_VIEWER_PASSWORD_FILE)"
+owner_password="$(read_secret KASMVNC_OWNER_PASSWORD KASMVNC_OWNER_PASSWORD_FILE)"
+
+if [ -L "${codex_home}" ] || { [ -e "${codex_home}" ] && [ ! -d "${codex_home}" ]; }; then
+    echo "shared Codex home must be a real directory: ${codex_home}" >&2
+    exit 1
+fi
+mkdir -p \
+    /run/codexbot \
+    "${kasm_home}/.vnc" \
+    "${profile_root}/chromium" \
+    "${profile_root}/outbox" \
+    "${XDG_CONFIG_HOME}" \
+    "${XDG_DATA_HOME}" \
+    "${XDG_CACHE_HOME}" \
+    "${XDG_STATE_HOME}" \
+    /home/agent/Downloads \
+    "${codex_home}"
+chmod 0700 "${codex_home}"
+
+codex_config="${codex_home}/config.toml"
+codex_config_template=/usr/local/share/codexbot/codex-config.toml
+codex_config_lock="${codex_home}/.config.lock"
+(
+    flock -x 9
+    if [ ! -e "${codex_config}" ]; then
+        config_tmp="$(mktemp "${codex_home}/.config.toml.XXXXXX")"
+        install -m 0600 "${codex_config_template}" "${config_tmp}"
+        mv "${config_tmp}" "${codex_config}"
+    else
+		credential_missing=0
+        if grep -Eq '^[[:space:]]*cli_auth_credentials_store[[:space:]]*=' "${codex_config}"; then
+            if ! grep -Eq '^[[:space:]]*cli_auth_credentials_store[[:space:]]*=[[:space:]]*"file"[[:space:]]*(#.*)?$' "${codex_config}"; then
+                echo "shared Codex config must set cli_auth_credentials_store = \"file\"" >&2
+                exit 1
+            fi
+        else
+			credential_missing=1
+        fi
+        missing_sections="$(python3 -c '
+import sys, tomllib
+with open(sys.argv[1], "rb") as config:
+    servers = tomllib.load(config).get("mcp_servers", {})
+for name in ("codexbot_browser", "codexbot_desktop", "codexbot_collaboration"):
+    if name not in servers:
+        print("[mcp_servers." + name + "]")
+' "${codex_config}")"
+		if [ "${credential_missing}" -eq 1 ] || [ -n "${missing_sections}" ]; then
+			config_tmp="$(mktemp "${codex_home}/.config.toml.XXXXXX")"
+			if [ "${credential_missing}" -eq 1 ]; then
+				printf '%s\n\n' 'cli_auth_credentials_store = "file"' > "${config_tmp}"
+			fi
+			cat "${codex_config}" >> "${config_tmp}"
+			printf '%s\n' "${missing_sections}" | while IFS= read -r heading; do
+				[ -n "${heading}" ] || continue
+				printf '\n' >> "${config_tmp}"
+                awk -v heading="${heading}" '
+                    $0 == heading { copying = 1 }
+                    copying && $0 != heading && /^\[/ { exit }
+                    copying { print }
+				' "${codex_config_template}" >> "${config_tmp}"
+			done
+			chmod 0600 "${config_tmp}"
+			mv "${config_tmp}" "${codex_config}"
+		fi
+    fi
+    chmod 0600 "${codex_config}"
+) 9> "${codex_config_lock}"
+chmod 0600 "${codex_config_lock}"
+
+# Verify the actual Codex sandbox before accepting work. Namespace restrictions
+# (including a host AppArmor policy) must fail startup, not silently turn Auto
+# into unsandboxed execution. This performs no model or network request.
+if ! codex sandbox --permission-profile :workspace --cd /home/agent -- /bin/true; then
+    echo "Codex workspace sandbox failed; check the agent seccomp profile and host user-namespace/AppArmor policy" >&2
+    exit 1
+fi
+
+if [ ! -e "${CODEXBOT_DESKTOP_LEASE_FILE}" ]; then
+    printf '%s\n' '{"holder":"agent","generation":1}' > "${CODEXBOT_DESKTOP_LEASE_FILE}"
+fi
+mkdir -p "${XDG_DATA_HOME}/applications" "${XDG_CONFIG_HOME}"
+if [ ! -e "${XDG_DATA_HOME}/applications/chromium.desktop" ]; then
+    cp /usr/local/share/codexbot/chromium.desktop "${XDG_DATA_HOME}/applications/chromium.desktop"
+fi
+if [ ! -e "${XDG_CONFIG_HOME}/mimeapps.list" ]; then
+    cp /usr/local/share/codexbot/mimeapps.list "${XDG_CONFIG_HOME}/mimeapps.list"
+fi
+
+# Seed the desktop before XFCE creates its default panel configuration.
+desktop_dir="${HOME}/Desktop"
+mkdir -p "${desktop_dir}"
+if [ ! -e "${desktop_dir}/chromium.desktop" ]; then
+    install -m 0755 /usr/local/share/codexbot/chromium.desktop "${desktop_dir}/chromium.desktop"
+fi
+panel_config="${XDG_CONFIG_HOME}/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml"
+if [ ! -e "${panel_config}" ]; then
+    mkdir -p "$(dirname "${panel_config}")"
+    sed \
+        -e '/<property name="panel-2"/,/<property name="plugin-ids"/s/name="autohide-behavior" type="uint" value="1"/name="autohide-behavior" type="uint" value="0"/' \
+        -e 's/value="xfce4-web-browser.desktop"/value="chromium.desktop"/' \
+        /etc/xdg/xfce4/panel/default.xml > "${panel_config}"
+fi
+
+cp /usr/local/share/codexbot/kasmvnc.yaml "${kasm_config}"
+cp /usr/local/share/codexbot/xstartup "${kasm_home}/.vnc/xstartup"
+chmod 0700 "${kasm_home}/.vnc/xstartup"
+
+if [ ! -s "${kasm_certificate}" ] || [ ! -s "${kasm_private_key}" ]; then
+    openssl req -x509 -nodes -newkey rsa:2048 -sha256 -days 825 \
+        -subj "/CN=codexbot-agent" \
+        -keyout "${kasm_private_key}" \
+        -out "${kasm_certificate}" >/dev/null 2>&1
+    chmod 0600 "${kasm_certificate}" "${kasm_private_key}"
+fi
+
+rm -f "${kasm_password_file}"
+printf '%s\n%s\n' "${viewer_password}" "${viewer_password}" \
+    | HOME="${kasm_home}" vncpasswd -u "${kasm_user}" -r "${kasm_password_file}" >/dev/null
+printf '%s\n%s\n' "${owner_password}" "${owner_password}" \
+    | HOME="${kasm_home}" vncpasswd -u owner -orw "${kasm_password_file}" >/dev/null
+unset owner_password
+unset KASM_PASSWORD KASMVNC_VIEWER_PASSWORD KASMVNC_OWNER_PASSWORD
+
+export DISPLAY="${kasm_display}"
+export XAUTHORITY="${kasm_home}/.Xauthority"
+touch "${XAUTHORITY}"
+chmod 0600 "${XAUTHORITY}"
+
+HOME="${kasm_home}" vncserver "${kasm_display}" \
+    -fg \
+    -geometry "${kasm_geometry}" \
+    -depth 24 \
+    -select-de xfce \
+    -websocketPort "${kasm_port}" \
+    -interface 0.0.0.0 \
+    -xstartup /usr/local/share/codexbot/xstartup &
+
+kasm_pid=$!
+ready=0
+attempt=0
+while [ "${attempt}" -lt 60 ]; do
+    if ! kill -0 "${kasm_pid}" 2>/dev/null; then
+        wait "${kasm_pid}" || true
+        echo "KasmVNC exited during startup" >&2
+        exit 1
+    fi
+    if curl --fail --insecure --silent --output /dev/null \
+        --user "${kasm_user}:${viewer_password}" \
+        "https://127.0.0.1:${kasm_port}/" 2>/dev/null; then
+        ready=1
+        break
+    fi
+    attempt=$((attempt + 1))
+    sleep 0.5
+done
+
+if [ "${ready}" -ne 1 ]; then
+    echo "KasmVNC did not become ready" >&2
+    exit 1
+fi
+unset viewer_password
+
+umask 0077
+exec env CODEXBOT_WORKER_TOKEN="${worker_token}" /usr/local/bin/agent-worker "$@"

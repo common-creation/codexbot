@@ -1,0 +1,21 @@
+#!/bin/sh
+set -eu
+
+kasm_port="${KASMVNC_PORT:-6901}"
+worker_addr="${AGENT_WORKER_HEALTH_URL:-http://127.0.0.1:8082/healthz}"
+kasm_user="${KASM_USER:-viewer}"
+kasm_password="${KASM_PASSWORD:-${KASMVNC_VIEWER_PASSWORD:-}}"
+if [ -z "${kasm_password}" ] && [ -n "${KASMVNC_VIEWER_PASSWORD_FILE:-}" ] \
+    && [ -r "${KASMVNC_VIEWER_PASSWORD_FILE}" ]; then
+    kasm_password="$(tr -d '\r\n' < "${KASMVNC_VIEWER_PASSWORD_FILE}")"
+fi
+if [ -z "${kasm_password}" ]; then
+    echo "KasmVNC viewer credential is unavailable to healthcheck" >&2
+    exit 1
+fi
+
+curl --fail --insecure --silent --show-error --max-time 2 \
+    --user "${kasm_user}:${kasm_password}" \
+    "https://127.0.0.1:${kasm_port}/" >/dev/null
+curl --fail --silent --show-error --max-time 2 \
+    "${worker_addr}" >/dev/null

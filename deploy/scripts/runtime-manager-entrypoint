@@ -1,0 +1,38 @@
+#!/bin/sh
+set -eu
+
+if [ -n "${CODEXBOT_RUNTIME_TOKEN_FILE:-}" ]; then
+    if [ ! -r "${CODEXBOT_RUNTIME_TOKEN_FILE}" ]; then
+        echo "CODEXBOT_RUNTIME_TOKEN_FILE is not readable" >&2
+        exit 1
+    fi
+    CODEXBOT_RUNTIME_TOKEN="$(tr -d '\r\n' < "${CODEXBOT_RUNTIME_TOKEN_FILE}")"
+    export CODEXBOT_RUNTIME_TOKEN
+fi
+if [ -z "${CODEXBOT_RUNTIME_TOKEN:-}" ]; then
+    echo "CODEXBOT_RUNTIME_TOKEN or CODEXBOT_RUNTIME_TOKEN_FILE is required" >&2
+    exit 1
+fi
+
+socket_path="${DOCKER_HOST#unix://}"
+if [ "${socket_path}" = "${DOCKER_HOST}" ] || [ ! -S "${socket_path}" ]; then
+    echo "DOCKER_HOST must reference a mounted Unix socket" >&2
+    exit 1
+fi
+
+docker_info="$(curl --fail --silent --show-error --unix-socket "${socket_path}" http://localhost/info)"
+if [ "${CODEXBOT_ALLOW_ROOTFUL_DOCKER:-false}" != "true" ]; then
+    if ! printf '%s' "${docker_info}" \
+        | jq -e '.SecurityOptions // [] | any(. == "name=rootless")' >/dev/null; then
+        echo "refusing non-rootless Docker daemon; set CODEXBOT_ALLOW_ROOTFUL_DOCKER=true only after reviewing the host-root risk" >&2
+        exit 1
+    fi
+fi
+unset docker_info
+
+exec setpriv \
+    --bounding-set=-all \
+    --inh-caps=-all \
+    --ambient-caps=-all \
+    --no-new-privs \
+    -- /usr/local/bin/runtime-manager "$@"

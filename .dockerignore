@@ -1,0 +1,16 @@
+.git
+.tmp
+.env
+data
+web/node_modules
+web/dist
+web/coverage
+**/*.tsbuildinfo
+**/__pycache__
+**/*.pyc
+*.db
+*.db-shm
+*.db-wal
+deploy/.env
+deploy/secrets/*
+!deploy/secrets/.gitkeep

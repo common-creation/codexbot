@@ -1,0 +1,129 @@
+name: codexbot
+
+services:
+  codexbot:
+    image: ${CODEXBOT_CONTROL_PLANE_IMAGE:-codexbot-control-plane:local}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: control-plane
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETUID
+      - SETGID
+      - SETPCAP
+      - DAC_READ_SEARCH
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=128m
+      - /run:rw,nosuid,nodev,noexec,size=32m
+    environment:
+      CODEXBOT_DATA_DIR: /var/lib/codexbot
+      CODEXBOT_STATIC_DIR: /opt/codexbot/web
+      CODEXBOT_LISTEN_ADDR: :8080
+      CODEXBOT_RUNTIME_MANAGER_URL: http://runtime-manager:8081
+      CODEXBOT_RUNTIME_TOKEN_FILE: /run/secrets/runtime_token
+      CODEXBOT_BOOTSTRAP_TOKEN_FILE: /run/secrets/bootstrap_token
+      CODEXBOT_SECURE_COOKIES: ${CODEXBOT_SECURE_COOKIES:-true}
+      TZ: ${TZ:-Asia/Tokyo}
+    secrets:
+      - runtime_token
+      - bootstrap_token
+    volumes:
+      - codexbot-state:/var/lib/codexbot
+    networks:
+      - edge
+      - control
+    ports:
+      - ${CODEXBOT_BIND_ADDRESS:-127.0.0.1}:${CODEXBOT_PORT:-8080}:8080
+    depends_on:
+      runtime-manager:
+        condition: service_healthy
+
+  runtime-manager:
+    container_name: codexbot-runtime-manager
+    image: ${CODEXBOT_RUNTIME_MANAGER_IMAGE:-codexbot-runtime-manager:local}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: runtime-manager
+    restart: unless-stopped
+    # With rootless Docker, container UID 0 maps to the unprivileged daemon
+    # owner. It is needed to access the bind-mounted rootless socket.
+    user: "0:0"
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETPCAP
+      - DAC_READ_SEARCH
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=128m
+      - /run:rw,nosuid,nodev,noexec,size=64m
+    environment:
+      DOCKER_HOST: unix:///run/codexbot/docker.sock
+      CODEXBOT_RUNTIME_LISTEN_ADDR: :8081
+      CODEXBOT_CONTROL_PLANE_URL: http://codexbot:8080
+      CODEXBOT_RUNTIME_TOKEN_FILE: /run/secrets/runtime_token
+      CODEXBOT_SHARED_HOME: ${CODEXBOT_SHARED_HOME:?set CODEXBOT_SHARED_HOME to an absolute dedicated host path}
+      CODEXBOT_AGENT_IMAGE: ${CODEXBOT_AGENT_IMAGE:-codexbot-agent:local}
+      CODEXBOT_EGRESS_IMAGE: ${CODEXBOT_EGRESS_IMAGE:-codexbot-egress:local}
+      CODEXBOT_EGRESS_NETWORK: ${CODEXBOT_EGRESS_NETWORK:-codexbot-egress}
+      CODEXBOT_RUNTIME_MANAGER_CONTAINER: codexbot-runtime-manager
+      CODEXBOT_ALLOW_ROOTFUL_DOCKER: ${CODEXBOT_ALLOW_ROOTFUL_DOCKER:-false}
+      TZ: ${TZ:-Asia/Tokyo}
+    secrets:
+      - runtime_token
+    volumes:
+      - type: bind
+        source: ${CODEXBOT_DOCKER_SOCKET:?set CODEXBOT_DOCKER_SOCKET to the rootless Docker socket}
+        target: /run/codexbot/docker.sock
+      - type: bind
+        source: ${CODEXBOT_SHARED_HOME:?set CODEXBOT_SHARED_HOME to an absolute dedicated host path}
+        target: ${CODEXBOT_SHARED_HOME:?set CODEXBOT_SHARED_HOME to an absolute dedicated host path}
+    networks:
+      - control
+
+  agent-image:
+    image: ${CODEXBOT_AGENT_IMAGE:-codexbot-agent:local}
+    build:
+      context: ..
+      dockerfile: runtime/agent/Dockerfile
+    profiles:
+      - images
+    entrypoint:
+      - /bin/true
+
+  egress-image:
+    image: ${CODEXBOT_EGRESS_IMAGE:-codexbot-egress:local}
+    build:
+      context: ..
+      dockerfile: runtime/egress/Dockerfile
+    profiles:
+      - images
+    entrypoint:
+      - /bin/true
+
+networks:
+  edge:
+  control:
+    internal: true
+  egress:
+    name: ${CODEXBOT_EGRESS_NETWORK:-codexbot-egress}
+
+volumes:
+  codexbot-state:
+
+secrets:
+  runtime_token:
+    file: ${CODEXBOT_RUNTIME_TOKEN_FILE:-./secrets/runtime-token}
+  bootstrap_token:
+    file: ${CODEXBOT_BOOTSTRAP_TOKEN_FILE:-./secrets/bootstrap-token}

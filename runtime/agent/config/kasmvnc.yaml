@@ -1,0 +1,56 @@
+desktop:
+  resolution:
+    width: 1440
+    height: 900
+  allow_resize: false
+  pixel_depth: 24
+
+network:
+  protocol: http
+  interface: 0.0.0.0
+  websocket_port: 6901
+  use_ipv4: true
+  use_ipv6: false
+  ssl:
+    pem_certificate: /var/lib/codexbot/profile/kasmvnc/.vnc/certificate.pem
+    pem_key: /var/lib/codexbot/profile/kasmvnc/.vnc/private-key.pem
+    require_ssl: true
+
+user_session:
+  idle_timeout: never
+
+runtime_configuration:
+  allow_client_to_override_kasm_server_settings: false
+  allow_override_standard_vnc_server_settings: false
+
+server:
+  auto_shutdown:
+    no_user_session_timeout: never
+    active_user_session_timeout: never
+    inactive_user_session_timeout: never
+  http:
+    headers:
+      - Cross-Origin-Embedder-Policy=require-corp
+      - Cross-Origin-Opener-Policy=same-origin
+  advanced:
+    kasm_password_file: /var/lib/codexbot/profile/kasmvnc/.kasmpasswd
+    x_authority_file: /var/lib/codexbot/profile/kasmvnc/.Xauthority
+
+security:
+  brute_force_protection:
+    blacklist_threshold: 5
+    blacklist_timeout: 10
+
+data_loss_prevention:
+  clipboard:
+    delay_between_operations: none
+    server_to_client:
+      enabled: false
+      size: 0
+      primary_clipboard_enabled: false
+    client_to_server:
+      enabled: false
+      size: 0
+
+command_line:
+  prompt: false

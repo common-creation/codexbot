@@ -1,0 +1,16 @@
+cli_auth_credentials_store = "file"
+
+[mcp_servers.codexbot_browser]
+command = "/usr/local/lib/codexbot/browser-mcp.mjs"
+startup_timeout_sec = 30
+tool_timeout_sec = 60
+
+[mcp_servers.codexbot_collaboration]
+command = "/usr/local/lib/codexbot/collaboration-mcp.py"
+startup_timeout_sec = 10
+tool_timeout_sec = 30
+
+[mcp_servers.codexbot_desktop]
+command = "/usr/local/lib/codexbot/desktop-mcp.py"
+startup_timeout_sec = 10
+tool_timeout_sec = 60

@@ -1,0 +1,9 @@
+# Sourced by Debian's /usr/bin/chromium, including XFCE's preferred browser
+# helper and terminal launches that do not use chromium-visible.
+CHROMIUM_FLAGS="${CHROMIUM_FLAGS:-} --user-data-dir=${CHROMIUM_USER_DATA_DIR:-/var/lib/codexbot/profile/chromium} --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 --disable-dev-shm-usage --disable-features=Translate,MediaRouter --disable-sync --no-default-browser-check --no-first-run"
+codexbot_chromium_proxy="${HTTPS_PROXY:-${HTTP_PROXY:-}}"
+if [ -n "${codexbot_chromium_proxy}" ]; then
+    CHROMIUM_FLAGS="${CHROMIUM_FLAGS} --proxy-server=${codexbot_chromium_proxy} --proxy-bypass-list=<-loopback>"
+fi
+export CHROMIUM_FLAGS
+unset codexbot_chromium_proxy

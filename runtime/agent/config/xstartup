@@ -1,0 +1,18 @@
+#!/bin/sh
+set -eu
+
+export HOME=/home/agent
+export DISPLAY="${DISPLAY:-:1}"
+export XDG_CONFIG_HOME=/var/lib/codexbot/profile/xdg/config
+export XDG_DATA_HOME=/var/lib/codexbot/profile/xdg/data
+export XDG_CACHE_HOME=/var/lib/codexbot/profile/xdg/cache
+export XDG_STATE_HOME=/var/lib/codexbot/profile/xdg/state
+
+unset SESSION_MANAGER
+unset DBUS_SESSION_BUS_ADDRESS
+
+xset -dpms 2>/dev/null || true
+xset s off 2>/dev/null || true
+xset s noblank 2>/dev/null || true
+
+exec dbus-run-session -- startxfce4

@@ -1,0 +1,15 @@
+.env
+.tmp/
+data/
+dist/
+web/node_modules/
+web/dist/
+coverage/
+*.db
+*.db-shm
+*.db-wal
+*.log
+*.pyc
+__pycache__/
+runtime/secrets/
+deploy/secrets/

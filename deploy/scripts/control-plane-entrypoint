@@ -1,0 +1,47 @@
+#!/bin/sh
+set -eu
+
+read_secret() {
+    destination="$1"
+    file="${2:-}"
+    if [ -n "${file}" ]; then
+        if [ ! -r "${file}" ]; then
+            echo "secret file for ${destination} is not readable" >&2
+            exit 1
+        fi
+        value="$(tr -d '\r\n' < "${file}")"
+        if [ -z "${value}" ]; then
+            echo "secret file for ${destination} is empty" >&2
+            exit 1
+        fi
+        export "${destination}=${value}"
+        unset value
+    fi
+}
+
+read_secret CODEXBOT_RUNTIME_TOKEN "${CODEXBOT_RUNTIME_TOKEN_FILE:-}"
+read_secret CODEXBOT_BOOTSTRAP_TOKEN "${CODEXBOT_BOOTSTRAP_TOKEN_FILE:-}"
+
+if [ -z "${CODEXBOT_RUNTIME_TOKEN:-}" ]; then
+    echo "CODEXBOT_RUNTIME_TOKEN or CODEXBOT_RUNTIME_TOKEN_FILE is required" >&2
+    exit 1
+fi
+if [ -z "${CODEXBOT_BOOTSTRAP_TOKEN:-}" ]; then
+    echo "CODEXBOT_BOOTSTRAP_TOKEN or CODEXBOT_BOOTSTRAP_TOKEN_FILE is required" >&2
+    exit 1
+fi
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "control-plane entrypoint must start as root so it can read Compose secrets" >&2
+    exit 1
+fi
+
+exec setpriv \
+    --reuid=10001 \
+    --regid=10001 \
+    --clear-groups \
+    --bounding-set=-all \
+    --inh-caps=-all \
+    --ambient-caps=-all \
+    --no-new-privs \
+    -- /usr/local/bin/codexbot "$@"
