@@ -1,7 +1,7 @@
 # Agent collaboration
 
 Every agent image includes the `codexbot_collaboration` stdio MCP server for
-discovery, durable task delivery, live steering and result polling. Delegated
+discovery, durable task delivery, live steering and completion notifications. Delegated
 work retains the target's role, model, effort and Permission. Every task delegates
 input into the target's existing chat Conversation and Codex App Server thread.
 Manual messages and delegated tasks share that agent's current context and
@@ -12,14 +12,15 @@ Schedules execute independently and have their own history and output lists.
 | --- | --- |
 | `agents_list` | Agent IDs, names, role prompts, configuration, active run summaries, pending counts and human desktop ownership; includes `selfAgentId`. Page with `after` and `limit`. |
 | `agents_get` | One agent's details plus `systemInstructions`: the platform and role text sent as `developerInstructions`, not Codex's built-in base prompt. |
-| `tasks_send` | Persist an instruction and return its task ID. Requires `agentId`, `prompt`, `idempotencyKey`; `mode` defaults to `queue`. |
+| `tasks_send` | Persist an instruction and return its task ID. Requires `agentId`, `prompt`, `idempotencyKey`; `mode` defaults to `queue`, `completionMode` to `poll`. |
 | `tasks_list` | Page through incoming/outgoing tasks, optionally filtering status; pass `nextCursor` as `after`. |
 | `tasks_get` | Task/run status and output events; pass `nextSequence` as `afterSequence` while `hasMore` is true. |
 | `tasks_cancel` | Cancel a task the caller sent while it is still queued. |
 
 Prompts accept at most 65,536 UTF-8 bytes; idempotency keys at most 128 bytes.
-Reuse a key only to retry the same target, mode and prompt: the original receipt
-is returned even after completion. A conflicting retry receives HTTP 409.
+Reuse a key only to retry the same target, mode, completion mode and prompt:
+the original receipt is returned even after completion. A conflicting retry
+receives HTTP 409.
 Self-delegation is rejected. At most 100 queued, dispatching or running tasks
 may target one agent; further submissions receive HTTP 429. Task/event pages
 accept `limit` from 1 to 100. Agent lists use ID order; task lists are newest
@@ -46,9 +47,9 @@ redirected into a later active turn; its original requested mode remains visible
 
 Task states are `queued`, `dispatching`, `running`, `completed`, `failed`,
 `interrupted`, `unknown` and `cancelled`. A receipt is acceptance, not completion.
-Poll results between useful independent work. There is no automatic completion
-callback that starts a new requester turn: retrieve results with the tools, or
-send an explicit follow-up instruction to another agent.
+With the default `completionMode: "poll"`, check results between useful
+independent work using `tasks_get` or `tasks_list`. Use `completionMode: "notify"`
+to resume from a harness completion message instead.
 
 A task with its own turn has `outputScope: task`. A steered task shares its host
 turn's completion and subsequent output (`outputScope: shared_run`), rather
@@ -74,14 +75,72 @@ stop behavior for its current run. A new task submitted after a stop can start
 the target again, like a manual message. Queued work uses the target settings
 at dispatch; steering retains the active turn's settings.
 
+## Completion notifications
+
+`completionMode` is independent of `mode`: either queued or steered work can
+request a notification. For example:
+
+```json
+{
+  "agentId": "target-agent-id",
+  "prompt": "Inspect the failing test and report the cause.",
+  "mode": "queue",
+  "completionMode": "notify",
+  "idempotencyKey": "inspect-failing-test-1"
+}
+```
+
+The MCP call returns the receipt immediately; it does not block until the
+target finishes. The requester can continue independent work, or finish its
+current turn when it is only waiting. The harness sends a message containing
+the original task ID and terminal status when that task becomes `completed`,
+`failed`, `interrupted`, `unknown` or `cancelled`. On receiving that message,
+use `tasks_get` to retrieve the final result, following `nextSequence` while
+`hasMore` is true. These reads retrieve available output after the notification;
+repeated readiness polling is unnecessary. A terminal notification reports an
+outcome, not necessarily success: `failed` reports a task/run failure,
+`interrupted` a stopped execution, `cancelled` work cancelled before execution,
+and `unknown` an uncertain outcome. In particular, an unconfirmed steer may
+never have reached the target, even if its host run subsequently completed.
+
+Notify mode is accepted only from an active manual or collaboration chat run.
+Scheduled runs cannot request it. The harness captures the requester's current
+Conversation when the task is accepted. If that chat has an active turn when
+the notification is dispatched, the message uses `turn/steer`; if it is idle,
+the message starts a new turn in the same Conversation and App Server thread.
+A definitively rejected steer falls back to a queued turn. Human desktop
+ownership postpones delivery. An active scheduled run also postpones delivery
+until the chat can resume; notifications never enter a scheduled run.
+
+Notifications are durable reverse tasks with `mode: "steer"` and
+`completionMode: "poll"`, so they survive restart without creating notification
+loops. The original receipt's `completionTaskId` links to its notification
+receipt; that receipt's `notificationForTaskId` links back to the original.
+Notification delivery has its own status, distinct from the original task's
+outcome. Reading a notification task with `tasks_get` returns
+`outputScope: "notification"` and the delivery receipt, without the requester's
+continuation output. Use its `notificationForTaskId` to read the original
+delegated result. Uncertain notification delivery becomes `unknown` and is not resent
+automatically, because the input may already have reached the requester.
+These harness-generated receipts cannot be cancelled with `tasks_cancel`;
+stopping the requester cancels its pending continuations.
+
+Choosing **New chat** prevents an old notification from entering the new
+context; its notification task is cancelled. Stopping or archiving the
+requester (including **Stop run**) suppresses obsolete callbacks, including callbacks for delegated
+work that finishes later. This does not turn a failed or suppressed callback
+into successful delivery: inspect the task receipts when diagnosing a missing
+continuation. An explicit new delegation can request notifications again.
+
 ## Chat timeline and supplemental input
 
 Open an agent's chat to see its manual and delegated inputs together
 with the executing agent's tool activity and assistant responses. Incoming tasks
 show their sender and task ID. Both agents have a delegation status entry that
-links to the other agent's timeline. Target output remains in the target's chat;
-it is not copied into the requester's conversation. The requester can use
-`tasks_get` to read the result and decide how to continue its own work.
+links to the other agent's timeline. Target output remains in the target's chat.
+A completion notification carries the task ID and status rather than copying
+all output; the requester uses `tasks_get` to read the result and continue its
+own work.
 
 The chat stays live while the agent is idle and discovers newly delegated
 work automatically. Earlier events are available through **Load
@@ -96,9 +155,11 @@ attachment submission is available through the chat composer.
 Each agent retains its current Conversation when its role or model settings
 change. **New chat** explicitly resets that context using the conversation-
 creation API: the next manual or delegated input starts a fresh
-thread, and subsequent inputs share it. Pending tasks use the current context
-at dispatch. Previous messages stay visible behind a reset marker but are not
-included in the new model context. Reset is blocked during active work or human
+thread, and subsequent inputs share it. Pending delegated instructions use the
+current context at dispatch; completion notifications are bound to the
+originating context and are cancelled after a reset. Previous messages stay
+visible behind a reset marker but are not included in the new model context.
+Reset is blocked during active work or human
 desktop control. A stale browser submission against the previous conversation
 is rejected so the draft can be reviewed and resent after refreshing.
 Existing manual/delegated context is preserved, including its thread ID.
@@ -153,5 +214,9 @@ existing overrides, including `enabled=false`. Verify the recreated agent has
 Tests cover store reopen/FIFO/idempotency, authentication, queue/steer/results,
 canonical Conversation reuse, history migration and pagination, idle timeline
 updates, supplemental input, real Unix socket forwarding, and app-server wire
-behavior with durable delivery replay. Simulated app-server tests do not establish live model adherence or
-production deployment.
+behavior with durable delivery replay. Completion-mode schema/default/validation
+and retry payload forwarding are exercised through the MCP bridge. Store and
+control-plane tests exercise notification creation and dispatch, requester
+context binding and obsolete callback suppression. These local tests and
+simulated app-server tests do not establish live model adherence, deployed
+continuation behavior or production deployment.

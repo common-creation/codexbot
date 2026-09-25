@@ -46,14 +46,21 @@ TOOLS = [
          "When no turn is active, or the active turn definitively rejects the update, it falls back "
          "to a queued turn in the same conversation. A successfully delivered steer shares the host run's "
          "output; use tasks_get outputScope to distinguish task from shared_run results. Acceptance is not "
-         "completion. Use tasks_get or tasks_list to check progress later while doing other work; "
-         "do not tightly poll or block waiting on another agent. Choose a unique idempotencyKey "
+         "completion. completionMode=poll (default) requires later result checks. completionMode=notify "
+         "returns immediately and asks the harness to send a completion message when the task reaches "
+         "completed, failed, interrupted, unknown or cancelled. It requires an active chat run, not a schedule. "
+         "The message steers your active chat turn or starts a new turn in the same originating conversation. "
+         "Do independent work, or finish your current turn if only waiting; resume on notification without "
+         "polling for readiness, then use tasks_get and its pagination to retrieve the result. "
+         "New chat, stopping or archiving the requester suppresses obsolete notifications. "
+         "Do not tightly poll or block waiting on another agent. Choose a unique idempotencyKey "
          "for each logical task and reuse that same key and payload after timeouts/retries to avoid "
          "duplicate work. Never send credentials or unrelated private data.",
          {"agentId": IDENTIFIER,
           "prompt": {"type": "string", "minLength": 1, "maxLength": 65536,
                      "description": "Task instructions, at most 65536 UTF-8 bytes."},
           "mode": {"type": "string", "enum": ["queue", "steer"], "default": "queue"},
+          "completionMode": {"type": "string", "enum": ["poll", "notify"], "default": "poll"},
           "idempotencyKey": {**IDENTIFIER, "description": "Stable key reused for retries of this task, at most 128 UTF-8 bytes."}},
          ["agentId", "prompt", "idempotencyKey"], read_only=False),
     tool("tasks_list", "List your outgoing tasks (default), or incoming tasks addressed to you. "
@@ -68,13 +75,16 @@ TOOLS = [
          "outputScope=shared_run means the update was steered into another turn and output is shared; "
          "outputScope=task means the task has its own turn in the target's ongoing conversation, "
          "including a steer that fell back to the queue. "
+         "outputScope=notification returns only the harness completion delivery receipt, without "
+         "the requester's continuation output; use notificationForTaskId to retrieve the delegated result. "
          "Oversized event payloads are explicitly truncated; continue with nextSequence to retrieve "
          "subsequent output. A task is complete only when "
          "its status says so; queued or accepted is not completion. Do not tightly poll.",
          {"taskId": IDENTIFIER, "afterSequence": {"type": "integer", "minimum": 0}, "limit": LIMIT},
          ["taskId"]),
     tool("tasks_cancel", "Cancel a task you sent while it is still queued. A task already dispatched "
-         "or delivered as steer cannot be recalled with this tool.", {"taskId": IDENTIFIER},
+         "or delivered as steer cannot be recalled with this tool. Harness-generated completion "
+         "notifications cannot be cancelled with this tool.", {"taskId": IDENTIFIER},
          ["taskId"], read_only=False),
 ]
 TOOL_BY_NAME = {entry["name"]: entry for entry in TOOLS}
@@ -169,6 +179,7 @@ def call_tool(name: str, arguments: Any) -> dict:
     elif name == "tasks_send":
         result = request_gateway("POST", "/tasks", {"targetAgentId": args["agentId"],
                                  "prompt": args["prompt"], "mode": args["mode"],
+                                 "completionMode": args["completionMode"],
                                  "idempotencyKey": args["idempotencyKey"]})
     elif name == "tasks_list":
         result = request_gateway("GET", "/tasks?" + urlencode(args))

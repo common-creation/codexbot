@@ -513,6 +513,9 @@ func (s *Server) stopAgent(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(204)
 }
 func (s *Server) stopAgentRuntime(ctx context.Context, id string) error {
+	if err := s.store.SuppressCollaborationCompletions(ctx, id, "requesting agent stopped by user"); err != nil {
+		return err
+	}
 	if err := s.store.CancelQueuedCollaborationTasks(ctx, id, "agent stopped by user"); err != nil {
 		return err
 	}
@@ -532,6 +535,9 @@ func (s *Server) stopAgentRuntime(ctx context.Context, id string) error {
 	}
 	// Queue acceptance stays responsive during the remote stop operation. Also
 	// cancel instructions accepted during that operation before releasing its lock.
+	if err := s.store.SuppressCollaborationCompletions(ctx, id, "requesting agent stopped by user"); err != nil {
+		return err
+	}
 	if err := s.store.CancelQueuedCollaborationTasks(ctx, id, "agent stopped by user"); err != nil {
 		return err
 	}
@@ -825,6 +831,10 @@ func (s *Server) interrupt(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.store.FinishRun(r.Context(), run.ID, "interrupted", "interrupted by user")
 	s.cancelRelay(run.ID)
+	if err := s.store.SuppressCollaborationCompletions(r.Context(), id, "requesting run interrupted by user"); err != nil {
+		writeError(w, 500, "could not cancel pending completion notifications")
+		return
+	}
 	w.WriteHeader(204)
 }
 

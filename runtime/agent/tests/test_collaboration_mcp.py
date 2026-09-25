@@ -45,11 +45,17 @@ class MCPTests(unittest.TestCase):
         self.assertTrue(tools["agents_get"]["annotations"]["readOnlyHint"])
         self.assertTrue(tools["tasks_send"]["annotations"]["destructiveHint"])
         self.assertTrue(tools["tasks_send"]["annotations"]["idempotentHint"])
+        self.assertEqual(tools["tasks_send"]["inputSchema"]["properties"]["completionMode"],
+                         {"type": "string", "enum": ["poll", "notify"], "default": "poll"})
+        self.assertNotIn("completionMode", tools["tasks_send"]["inputSchema"]["required"])
 
     def test_invalid_arguments_never_reach_gateway(self):
         invalid = [("missing_tool", {}), ("agents_get", {}), ("agents_list", {"sourceAgentId": "spoof"}),
                    ("tasks_send", {"agentId": "a", "prompt": "work"}),
                    ("tasks_send", {"agentId": "a", "prompt": " ", "idempotencyKey": "key"}),
+                   ("tasks_send", {"agentId": "a", "prompt": "work", "idempotencyKey": "key", "completionMode": "await"}),
+                   ("tasks_send", {"agentId": "a", "prompt": "work", "idempotencyKey": "key", "completionMode": None}),
+                   ("tasks_send", {"agentId": "a", "prompt": "work", "idempotencyKey": "key", "completionMode": True}),
                    ("tasks_list", {"limit": True}), ("tasks_list", {"limit": 101}),
                    ("tasks_list", {"direction": "all"}), ("tasks_list", {"status": "made_up"}),
                    ("agents_list", {"limit": 101}), ("agents_list", {"after": ""}),
@@ -71,13 +77,29 @@ class MCPTests(unittest.TestCase):
             gateway.assert_called_with("GET", "/agents/a%3Fx%3D1")
             rpc("tasks_send", {"agentId": "a", "prompt": "日本語", "idempotencyKey": "stable"})
             gateway.assert_called_with("POST", "/tasks", {"targetAgentId": "a", "prompt": "日本語",
-                                                         "idempotencyKey": "stable", "mode": "queue"})
+                                                         "idempotencyKey": "stable", "mode": "queue",
+                                                         "completionMode": "poll"})
             rpc("tasks_list", {"after": "cursor&other=value"})
             gateway.assert_called_with("GET", "/tasks?after=cursor%26other%3Dvalue&direction=outgoing&limit=50")
             rpc("tasks_get", {"taskId": "t", "afterSequence": 15, "limit": 5})
             gateway.assert_called_with("GET", "/tasks/t?afterSequence=15&limit=5")
             rpc("tasks_cancel", {"taskId": "t"})
             gateway.assert_called_with("POST", "/tasks/t/cancel", {})
+
+    def test_completion_mode_is_forwarded_independently_of_delivery_mode(self):
+        with patch.object(mcp, "request_gateway", return_value={"task": {"id": "task-1"}}) as gateway:
+            for mode in ("queue", "steer"):
+                for completion_mode in ("poll", "notify"):
+                    with self.subTest(mode=mode, completion_mode=completion_mode):
+                        args = {"agentId": "peer", "prompt": "work", "mode": mode,
+                                "completionMode": completion_mode, "idempotencyKey": "stable"}
+                        original = dict(args)
+                        result = rpc("tasks_send", args)
+                        self.assertNotIn("error", result)
+                        gateway.assert_called_with("POST", "/tasks", {
+                            "targetAgentId": "peer", "prompt": "work", "mode": mode,
+                            "completionMode": completion_mode, "idempotencyKey": "stable"})
+                        self.assertEqual(args, original)
 
     def test_multibyte_prompt_and_retry_key_obey_gateway_byte_limits(self):
         with patch.object(mcp, "request_gateway", return_value={}) as gateway:
@@ -116,7 +138,7 @@ class MCPTests(unittest.TestCase):
         self.assertTrue(result["result"]["isError"])
         self.assertIn("HTTP 409: target unavailable", result["result"]["content"][0]["text"])
 
-    def test_real_unix_http_roundtrip_preserves_steer_and_idempotency(self):
+    def test_real_unix_http_roundtrip_preserves_steer_notify_and_idempotency(self):
         received = []
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -138,7 +160,8 @@ class MCPTests(unittest.TestCase):
                 thread.start()
                 try:
                     with patch.object(mcp, "SOCKET_PATH", path):
-                        args = {"agentId": "peer", "prompt": "追加の指示", "mode": "steer", "idempotencyKey": "retry-key"}
+                        args = {"agentId": "peer", "prompt": "追加の指示", "mode": "steer",
+                                "completionMode": "notify", "idempotencyKey": "retry-key"}
                         first = rpc("tasks_send", args)
                         second = rpc("tasks_send", args)
                 finally:
@@ -146,7 +169,9 @@ class MCPTests(unittest.TestCase):
                     thread.join()
         self.assertEqual(first, second)
         self.assertEqual(received[0][2], {"targetAgentId": "peer", "prompt": "追加の指示",
-                                         "mode": "steer", "idempotencyKey": "retry-key"})
+                                         "mode": "steer", "completionMode": "notify", "idempotencyKey": "retry-key"})
+        self.assertEqual(len(received), 2)
+        self.assertEqual(received[0][2], received[1][2])
         self.assertNotIn("Authorization", received[0][1])
         self.assertNotIn("sourceAgentId", received[0][2])
 
