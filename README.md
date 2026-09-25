@@ -12,6 +12,7 @@ administrator-selected home directory.
 
 - Local administrator setup and Argon2id-backed sessions.
 - Agent creation with versioned role instructions, model/reasoning-effort settings, and per-agent permissions.
+- Per-agent icon uploads, shared by the sidebar, chat timeline, and scheduled results.
 - Persistent sidebar ordering with drag-and-drop and named agent sections.
 - A shared current chat context per agent for manual messages, delegated work,
   and supplemental input. Only the user's **New chat** action resets it.
@@ -38,6 +39,13 @@ handle opens a section and position picker for keyboard and touch use. Section
 settings support renaming, moving, and deleting sections. Deleting a section
 moves its agents to **Unsectioned**. Organization is saved in the workspace
 database and shared across browser sessions.
+
+Choose **Agent icon** in the create or edit dialog to preview an image, then save
+the agent to apply it. PNG, JPEG, and GIF files up to 2 MiB and 4096 pixels per
+dimension are supported. Images are stored in the workspace database as PNG
+thumbnails up to 512 pixels per dimension; animated GIFs use their first frame.
+**Remove icon** restores the agent's initial. Icon changes preserve the current
+chat context.
 
 ## Agent permissions
 

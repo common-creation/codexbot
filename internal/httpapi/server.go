@@ -87,6 +87,7 @@ func (s *Server) routes() {
 	s.mux.Handle("PUT /api/sidebar", s.requireAuth(http.HandlerFunc(s.updateSidebar)))
 	s.mux.Handle("POST /api/agents", s.requireAuth(http.HandlerFunc(s.createAgent)))
 	s.mux.Handle("GET /api/agents/{agentID}", s.requireAuth(http.HandlerFunc(s.getAgent)))
+	s.mux.Handle("GET /api/agents/{agentID}/icon", s.requireAuth(http.HandlerFunc(s.getAgentIcon)))
 	s.mux.Handle("PATCH /api/agents/{agentID}", s.requireAuth(http.HandlerFunc(s.updateAgent)))
 	s.mux.Handle("DELETE /api/agents/{agentID}", s.requireAuth(http.HandlerFunc(s.archiveAgent)))
 	s.mux.Handle("POST /api/agents/{agentID}/start", s.requireAuth(http.HandlerFunc(s.startAgent)))
@@ -308,9 +309,9 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Name, RolePrompt, Model, Effort string
 		Permission                      json.RawMessage
+		Icon                            json.RawMessage
 	}
-	if decode(r, &in) != nil {
-		writeError(w, 400, "invalid JSON")
+	if !decodeAgentSettings(w, r, &in) {
 		return
 	}
 	in.Name = strings.TrimSpace(in.Name)
@@ -330,6 +331,11 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "permission must be auto or full-access")
 		return
 	}
+	icon, err := decodeAgentIcon(in.Icon)
+	if err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
 	now := time.Now()
 	s.authMu.Lock()
 	sharedAuth, err := s.store.SharedAuth(r.Context())
@@ -343,7 +349,7 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 		providerState = "disconnected"
 	}
 	a := domain.Agent{ID: uuid.NewString(), Name: in.Name, RolePrompt: in.RolePrompt, Model: in.Model, Effort: in.Effort, Permission: permission, RoleVersion: 1, Status: "stopped", ProviderAuthState: providerState, CreatedAt: now, UpdatedAt: now}
-	err = s.store.CreateAgent(r.Context(), a)
+	err = s.store.CreateAgentWithIcon(r.Context(), a, icon)
 	s.authMu.Unlock()
 	if err != nil {
 		writeError(w, 500, "could not create agent")
@@ -353,8 +359,9 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 		s.logger.Error("start newly created agent", "agent", a.ID, "error", err)
 		_ = s.store.SetAgentStatus(r.Context(), a.ID, "error")
 		a.Status = "error"
-	} else if running, loadErr := s.store.Agent(r.Context(), a.ID); loadErr == nil {
-		a = running
+	}
+	if stored, loadErr := s.store.Agent(r.Context(), a.ID); loadErr == nil {
+		a = stored
 	}
 	writeJSON(w, 201, a)
 }
@@ -371,15 +378,20 @@ func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
 		Name, RolePrompt string
 		Model, Effort    *string
 		Permission       json.RawMessage
+		Icon             json.RawMessage
 	}
-	if decode(r, &in) != nil {
-		writeError(w, 400, "invalid JSON")
+	if !decodeAgentSettings(w, r, &in) {
 		return
 	}
 	in.Name = strings.TrimSpace(in.Name)
 	in.RolePrompt = strings.TrimSpace(in.RolePrompt)
 	if len(in.Name) < 1 || len(in.Name) > 80 || len(in.RolePrompt) < 1 || len(in.RolePrompt) > 16384 {
 		writeError(w, 400, "name or rolePrompt is outside allowed length")
+		return
+	}
+	icon, err := decodeAgentIcon(in.Icon)
+	if err != nil {
+		writeError(w, 400, err.Error())
 		return
 	}
 	id := r.PathValue("agentID")
@@ -427,7 +439,7 @@ func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	a, err := s.store.UpdateAgent(r.Context(), id, in.Name, in.RolePrompt, model, effort, permission)
+	a, err := s.store.UpdateAgentWithIcon(r.Context(), id, in.Name, in.RolePrompt, model, effort, permission, icon)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, 404, "agent not found")

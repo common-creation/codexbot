@@ -19,6 +19,7 @@ func (p PermissionMode) Valid() bool {
 type Agent struct {
 	ID                string         `json:"id"`
 	Name              string         `json:"name"`
+	IconURL           string         `json:"iconUrl,omitempty"`
 	RolePrompt        string         `json:"rolePrompt"`
 	Model             string         `json:"model"`
 	Effort            string         `json:"effort"`

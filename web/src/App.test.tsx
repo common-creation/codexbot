@@ -6,6 +6,7 @@ import { api, ApiError } from "./api";
 import type { Agent, AgentEvent, ModelOption, Permission, Schedule } from "./types";
 
 vi.mock("./api", () => ({
+  resolveApiUrl: (path: string) => path,
   ApiError: class ApiError extends Error { constructor(message: string, readonly status: number) { super(message); } },
   api: {
     getSetupStatus: vi.fn(),

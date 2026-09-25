@@ -9,6 +9,8 @@ import { NativeSelect, NativeSelectOption } from "./components/ui/native-select"
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from "./components/ui/dialog";
 import { DesktopSheet } from "./components/DesktopSheet";
 import { AgentSidebarList } from "./components/AgentSidebarList";
+import { AgentAvatar as Avatar } from "./components/AgentAvatar";
+import { AgentIconPicker } from "./components/AgentIconPicker";
 import { ScheduleDetail } from "./components/ScheduleDetail";
 import { MarkdownMessage } from "./components/MarkdownMessage";
 import { Switch } from "./components/ui/switch";
@@ -19,6 +21,7 @@ import { type ChatEntry } from "./streamModel";
 import { MAX_ATTACHMENTS, MAX_ATTACHMENT_BYTES, readAttachment, shouldSubmitComposerKey } from "./composer";
 import type {
   Agent,
+  IconUpload,
   Session,
   ModelOption,
   Permission,
@@ -709,6 +712,8 @@ function AgentPermissionField({ permission, onChange, disabled }: {
 
 function CreateAgentModal({ models, onClose, onCreated }: { models: ModelOption[]; onClose: () => void; onCreated: (agent: Agent) => void }) {
   const [name, setName] = useState("");
+  const [icon, setIcon] = useState<IconUpload | null>();
+  const [readingIcon, setReadingIcon] = useState(false);
   const [rolePrompt, setRolePrompt] = useState("");
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
@@ -721,11 +726,11 @@ function CreateAgentModal({ models, onClose, onCreated }: { models: ModelOption[
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
-    if (!name.trim() || !rolePrompt.trim()) return;
+    if (!name.trim() || !rolePrompt.trim() || saving || readingIcon) return;
     setSaving(true);
     setError(undefined);
     try {
-      onCreated(await api.createAgent({ name: name.trim(), rolePrompt: rolePrompt.trim(), model: model.trim(), effort, permission }));
+      onCreated(await api.createAgent({ name: name.trim(), rolePrompt: rolePrompt.trim(), model: model.trim(), effort, permission, ...(icon !== undefined ? { icon } : {}) }));
     } catch (cause) {
       setError(toMessage(cause, "Could not create the agent."));
       setSaving(false);
@@ -740,12 +745,13 @@ function CreateAgentModal({ models, onClose, onCreated }: { models: ModelOption[
         <DialogDescription>Give this agent a name and a durable role. Its desktop and private profile will be created automatically.</DialogDescription>
         <form onSubmit={submit}>
           <Label className="flex-col items-start leading-normal">Agent name<Input ref={nameInput} value={name} onChange={(event) => setName(event.target.value)} maxLength={80} placeholder="e.g. Sales Outbound" /></Label>
+          <AgentIconPicker name={name} value={icon} onChange={setIcon} disabled={saving} onBusyChange={setReadingIcon} />
           <Label className="flex-col items-start leading-normal">Role and instructions<Textarea value={rolePrompt} onChange={(event) => setRolePrompt(event.target.value)} rows={6} maxLength={8000} placeholder="Describe what this agent owns, how it should work, and any important boundaries…" /></Label>
           <AgentModelFields models={models} model={model} effort={effort} onModelChange={setModel} onEffortChange={setEffort} disabled={saving} />
           <AgentPermissionField permission={permission} onChange={setPermission} disabled={saving} />
           <div className="role-hint"><Icon name="spark" /><span>These instructions define the agent’s role in its ongoing conversation.</span></div>
           {error && <div className="form-error">{error}</div>}
-          <div className="modal-actions"><Button variant="outline" type="button" className="button secondary" onClick={onClose}>Cancel</Button><Button variant="default" className="button primary" disabled={!name.trim() || !rolePrompt.trim() || saving}>{saving ? "Creating…" : "Create agent"}</Button></div>
+          <div className="modal-actions"><Button variant="outline" type="button" className="button secondary" onClick={onClose}>Cancel</Button><Button variant="default" className="button primary" disabled={!name.trim() || !rolePrompt.trim() || saving || readingIcon}>{saving ? "Creating…" : "Create agent"}</Button></div>
         </form>
       </DialogContent>
     </Dialog>
@@ -754,6 +760,8 @@ function CreateAgentModal({ models, onClose, onCreated }: { models: ModelOption[
 
 function EditAgentModal({ models, agent, onClose, onUpdated, onDeleted }: { models: ModelOption[]; agent: Agent; onClose: () => void; onUpdated: (agent: Agent) => void; onDeleted: (agentId: string) => void }) {
   const [name, setName] = useState(agent.name);
+  const [icon, setIcon] = useState<IconUpload | null>();
+  const [readingIcon, setReadingIcon] = useState(false);
   const [rolePrompt, setRolePrompt] = useState(agent.rolePrompt);
   const [model, setModel] = useState(agent.model ?? "");
   const [effort, setEffort] = useState(agent.effort ?? "");
@@ -768,11 +776,11 @@ function EditAgentModal({ models, agent, onClose, onUpdated, onDeleted }: { mode
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
-    if (!name.trim() || !rolePrompt.trim() || saving || deleting) return;
+    if (!name.trim() || !rolePrompt.trim() || saving || deleting || readingIcon) return;
     setSaving(true);
     setError(undefined);
     try {
-      onUpdated(await api.updateAgent(agent.id, { name: name.trim(), rolePrompt: rolePrompt.trim(), model: model.trim(), effort, permission }));
+      onUpdated(await api.updateAgent(agent.id, { name: name.trim(), rolePrompt: rolePrompt.trim(), model: model.trim(), effort, permission, ...(icon !== undefined ? { icon } : {}) }));
     } catch (cause) {
       setError(toMessage(cause, "Could not update the agent."));
       setSaving(false);
@@ -797,9 +805,10 @@ function EditAgentModal({ models, agent, onClose, onUpdated, onDeleted }: { mode
       <DialogContent className="modal block max-h-[calc(100dvh-2rem)] overflow-y-auto" onCloseAutoFocus={(event) => { event.preventDefault(); const target = returnFocus.current?.isConnected ? returnFocus.current : document.querySelector<HTMLElement>('[aria-label="Agent settings"], [aria-label="Add agent"]'); target?.focus(); }}>
         <div className="modal-kicker"><Avatar agent={agent} size="small" /><span>Agent settings</span></div>
         <DialogTitle>Edit {agent.name}</DialogTitle>
-        <DialogDescription>Role, model, effort, and permission changes start a fresh context for the next chat. Name changes keep the current context.</DialogDescription>
+        <DialogDescription>Role, model, effort, and permission changes start a fresh context for the next chat. Name and icon changes keep the current context.</DialogDescription>
         <form onSubmit={submit}>
           <Label className="flex-col items-start leading-normal">Agent name<Input ref={nameInput} value={name} onChange={(event) => setName(event.target.value)} maxLength={80} /></Label>
+          <AgentIconPicker name={name} iconUrl={agent.iconUrl} value={icon} onChange={setIcon} disabled={saving || deleting} onBusyChange={setReadingIcon} />
           <Label className="flex-col items-start leading-normal">Role and instructions<Textarea value={rolePrompt} onChange={(event) => setRolePrompt(event.target.value)} rows={7} maxLength={16384} /></Label>
           <AgentModelFields models={models} model={model} effort={effort} onModelChange={setModel} onEffortChange={setEffort} disabled={saving} />
           <AgentPermissionField permission={permission} onChange={setPermission} disabled={saving} />
@@ -812,7 +821,7 @@ function EditAgentModal({ models, agent, onClose, onUpdated, onDeleted }: { mode
               <div className="delete-confirm"><span>Stop and remove <strong>{agent.name}</strong> from this workspace?</span><div><Button variant="outline" type="button" className="button secondary" onClick={() => setConfirmDelete(false)}>Cancel</Button><Button variant="destructive" type="button" className="button danger" onClick={() => void remove()} disabled={deleting}>{deleting ? "Deleting…" : "Delete agent"}</Button></div></div>
             )}
           </div>
-          <div className="modal-actions"><Button variant="outline" type="button" className="button secondary" onClick={onClose}>Cancel</Button><Button variant="default" className="button primary" disabled={!name.trim() || !rolePrompt.trim() || saving || deleting}>{saving ? "Saving…" : "Save changes"}</Button></div>
+          <div className="modal-actions"><Button variant="outline" type="button" className="button secondary" onClick={onClose}>Cancel</Button><Button variant="default" className="button primary" disabled={!name.trim() || !rolePrompt.trim() || saving || deleting || readingIcon}>{saving ? "Saving…" : "Save changes"}</Button></div>
         </form>
       </DialogContent>
     </Dialog>
@@ -923,10 +932,6 @@ function ConnectionsPanel({ agent, onCreate, onError }: { agent?: Agent; onCreat
 function EmptyState({ onCreate, loading }: { onCreate: () => void; loading: boolean }) {
   if (loading) return <div className="center-loader"><span className="spinner large" /></div>;
   return <div className="empty-workspace"><div className="empty-orbit"><span className="brand-mark big">C</span></div><span className="eyebrow">YOUR PRIVATE AGENT TEAM</span><h1>Build your first workspace</h1><p>Each agent gets an isolated desktop and Codex runtime, while sharing the files you choose.</p><Button variant="default" className="button primary large" onClick={onCreate}><Icon name="plus" />Create an agent</Button></div>;
-}
-
-function Avatar({ agent, size }: { agent: Agent; size?: "small" | "large" }) {
-  return <span className={`agent-avatar ${size ?? ""}`} aria-hidden="true"><span>{agent.name.slice(0, 1).toUpperCase()}</span></span>;
 }
 
 const icons = { plus: Plus, monitor: Monitor, search: Search, calendar: CalendarDays, link: Link, send: Send, stop: Square, x: X, check: Check, spark: Sparkles, play: Play, trash: Trash2, copy: Copy, key: KeyRound, menu: Menu, settings: Settings2, arrow: ArrowUpRight };

@@ -1,5 +1,6 @@
 import type {
   Agent,
+  IconUpload,
   Attachment,
   ModelOption,
   Conversation,
@@ -24,6 +25,12 @@ export class ApiError extends Error {
 }
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, "") ?? "";
+export const resolveApiUrl = (path: string): string => `${API_BASE}${path}`;
+
+type AgentSettingsInput = Pick<Agent, "name" | "rolePrompt" | "model" | "effort" | "permission"> & {
+  icon?: IconUpload | null;
+};
+
 let csrfToken = "";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -89,9 +96,9 @@ export const api = {
   getSidebar: () => request<SidebarLayout>("/api/sidebar"),
   saveSidebar: (layout: SidebarLayout) =>
     request<SidebarLayout>("/api/sidebar", { method: "PUT", body: json(layout) }),
-  createAgent: (input: Pick<Agent, "name" | "rolePrompt" | "model" | "effort" | "permission">) =>
+  createAgent: (input: AgentSettingsInput) =>
     request<Agent>("/api/agents", { method: "POST", body: json(input) }),
-  updateAgent: (id: string, input: Pick<Agent, "name" | "rolePrompt" | "model" | "effort" | "permission">) =>
+  updateAgent: (id: string, input: AgentSettingsInput) =>
     request<Agent>(`/api/agents/${id}`, { method: "PATCH", body: json(input) }),
   startAgent: (id: string) => request<Agent>(`/api/agents/${id}/start`, { method: "POST" }),
   stopAgent: (id: string) => request<void>(`/api/agents/${id}/stop`, { method: "POST" }),

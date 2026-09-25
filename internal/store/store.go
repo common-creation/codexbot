@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"time"
 
 	"github.com/common-creation/codexbot/internal/domain"
@@ -49,6 +50,9 @@ CREATE TABLE IF NOT EXISTS agents (
  id TEXT PRIMARY KEY, name TEXT NOT NULL, role_prompt TEXT NOT NULL, role_version INTEGER NOT NULL DEFAULT 1,
  status TEXT NOT NULL DEFAULT 'stopped', provider_auth_state TEXT NOT NULL DEFAULT 'disconnected',
  archived INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS agent_icons (
+ agent_id TEXT PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE, data BLOB NOT NULL
 );
 CREATE TABLE IF NOT EXISTS sidebar_layout (
  id INTEGER PRIMARY KEY CHECK (id = 1), revision INTEGER NOT NULL DEFAULT 0, layout TEXT NOT NULL
@@ -139,7 +143,7 @@ func (s *Store) migrateAgentSettings() error {
 	if err = rows.Close(); err != nil {
 		return err
 	}
-	for _, name := range []string{"model", "effort"} {
+	for _, name := range []string{"model", "effort", "icon_version"} {
 		if !columns[name] {
 			if _, err = s.db.Exec(`ALTER TABLE agents ADD COLUMN ` + name + ` TEXT NOT NULL DEFAULT ''`); err != nil {
 				return err
@@ -264,29 +268,46 @@ func (s *Store) DeleteSession(ctx context.Context, tokenHash string) error {
 }
 
 func (s *Store) CreateAgent(ctx context.Context, a domain.Agent) error {
+	return s.CreateAgentWithIcon(ctx, a, nil)
+}
+
+func (s *Store) CreateAgentWithIcon(ctx context.Context, a domain.Agent, icon *AgentIconUpdate) error {
 	if a.Permission == "" {
 		a.Permission = domain.PermissionAuto
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO agents(id,name,role_prompt,role_version,status,provider_auth_state,created_at,updated_at,model,effort,permission) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, a.ID, a.Name, a.RolePrompt, a.RoleVersion, a.Status, a.ProviderAuthState, ts(a.CreatedAt), ts(a.UpdatedAt), a.Model, a.Effort, a.Permission)
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `INSERT INTO agents(id,name,role_prompt,role_version,status,provider_auth_state,created_at,updated_at,model,effort,permission) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, a.ID, a.Name, a.RolePrompt, a.RoleVersion, a.Status, a.ProviderAuthState, ts(a.CreatedAt), ts(a.UpdatedAt), a.Model, a.Effort, a.Permission); err != nil {
+		return err
+	}
+	if err = updateAgentIcon(ctx, tx, a.ID, icon); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 func scanAgent(row interface{ Scan(...any) error }) (domain.Agent, error) {
 	var a domain.Agent
-	var c, u string
-	err := row.Scan(&a.ID, &a.Name, &a.RolePrompt, &a.RoleVersion, &a.Status, &a.ProviderAuthState, &c, &u, &a.Model, &a.Effort, &a.Permission)
+	var c, u, iconVersion string
+	err := row.Scan(&a.ID, &a.Name, &a.RolePrompt, &a.RoleVersion, &a.Status, &a.ProviderAuthState, &c, &u, &a.Model, &a.Effort, &a.Permission, &iconVersion)
+	if iconVersion != "" {
+		a.IconURL = "/api/agents/" + url.PathEscape(a.ID) + "/icon?v=" + iconVersion
+	}
 	a.CreatedAt = parseTS(c)
 	a.UpdatedAt = parseTS(u)
 	return a, err
 }
 func (s *Store) Agent(ctx context.Context, id string) (domain.Agent, error) {
-	a, err := scanAgent(s.db.QueryRowContext(ctx, `SELECT id,name,role_prompt,role_version,status,provider_auth_state,created_at,updated_at,model,effort,permission FROM agents WHERE id=? AND archived=0`, id))
+	a, err := scanAgent(s.db.QueryRowContext(ctx, `SELECT id,name,role_prompt,role_version,status,provider_auth_state,created_at,updated_at,model,effort,permission,icon_version FROM agents WHERE id=? AND archived=0`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return a, ErrNotFound
 	}
 	return a, err
 }
 func (s *Store) Agents(ctx context.Context) ([]domain.Agent, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,name,role_prompt,role_version,status,provider_auth_state,created_at,updated_at,model,effort,permission FROM agents WHERE archived=0 ORDER BY created_at`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,name,role_prompt,role_version,status,provider_auth_state,created_at,updated_at,model,effort,permission,icon_version FROM agents WHERE archived=0 ORDER BY created_at`)
 	if err != nil {
 		return nil, err
 	}
@@ -302,7 +323,16 @@ func (s *Store) Agents(ctx context.Context) ([]domain.Agent, error) {
 	return out, rows.Err()
 }
 func (s *Store) UpdateAgent(ctx context.Context, id, name, role, model, effort string, permission domain.PermissionMode) (domain.Agent, error) {
-	res, err := s.db.ExecContext(ctx, `UPDATE agents SET name=?,role_prompt=?,role_version=role_version+CASE WHEN role_prompt<>? OR model<>? OR effort<>? OR permission<>? THEN 1 ELSE 0 END,model=?,effort=?,permission=?,updated_at=? WHERE id=? AND archived=0`, name, role, role, model, effort, permission, model, effort, permission, ts(time.Now()), id)
+	return s.UpdateAgentWithIcon(ctx, id, name, role, model, effort, permission, nil)
+}
+
+func (s *Store) UpdateAgentWithIcon(ctx context.Context, id, name, role, model, effort string, permission domain.PermissionMode, icon *AgentIconUpdate) (domain.Agent, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.Agent{}, err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `UPDATE agents SET name=?,role_prompt=?,role_version=role_version+CASE WHEN role_prompt<>? OR model<>? OR effort<>? OR permission<>? THEN 1 ELSE 0 END,model=?,effort=?,permission=?,updated_at=? WHERE id=? AND archived=0`, name, role, role, model, effort, permission, model, effort, permission, ts(time.Now()), id)
 	if err != nil {
 		return domain.Agent{}, err
 	}
@@ -310,7 +340,14 @@ func (s *Store) UpdateAgent(ctx context.Context, id, name, role, model, effort s
 	if n == 0 {
 		return domain.Agent{}, ErrNotFound
 	}
-	return s.Agent(ctx, id)
+	if err = updateAgentIcon(ctx, tx, id, icon); err != nil {
+		return domain.Agent{}, err
+	}
+	a, err := scanAgent(tx.QueryRowContext(ctx, `SELECT id,name,role_prompt,role_version,status,provider_auth_state,created_at,updated_at,model,effort,permission,icon_version FROM agents WHERE id=? AND archived=0`, id))
+	if err != nil {
+		return domain.Agent{}, err
+	}
+	return a, tx.Commit()
 }
 func (s *Store) SetAgentStatus(ctx context.Context, id, status string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE agents SET status=?,updated_at=? WHERE id=?`, status, ts(time.Now()), id)
@@ -377,6 +414,9 @@ func (s *Store) ArchiveAgent(ctx context.Context, id string) error {
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, `DELETE FROM desktop_leases WHERE agent_id=?`, id); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM agent_icons WHERE agent_id=?`, id); err != nil {
 		return err
 	}
 	return tx.Commit()

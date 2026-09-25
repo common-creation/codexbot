@@ -3,6 +3,28 @@ import { api } from "./api";
 
 afterEach(() => vi.unstubAllGlobals());
 
+it("sends icon replacements, removals, and unchanged settings through the authenticated agent API", async () => {
+  const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ csrfToken: "icon-csrf" }) });
+  vi.stubGlobal("fetch", fetch);
+  await api.getSession();
+  const settings = { name: "Research", rolePrompt: "Help the user" };
+  await api.createAgent({ ...settings, icon: { data: "aWNvbg==" } });
+  await api.updateAgent("agent-1", { ...settings, icon: null });
+  await api.updateAgent("agent-1", settings);
+
+  expect(fetch).toHaveBeenNthCalledWith(2, "/api/agents", expect.objectContaining({
+    method: "POST", credentials: "same-origin",
+    headers: expect.objectContaining({ "X-CSRF-Token": "icon-csrf" }),
+    body: JSON.stringify({ ...settings, icon: { data: "aWNvbg==" } }),
+  }));
+  expect(fetch).toHaveBeenNthCalledWith(3, "/api/agents/agent-1", expect.objectContaining({
+    method: "PATCH", body: JSON.stringify({ ...settings, icon: null }),
+  }));
+  expect(fetch).toHaveBeenNthCalledWith(4, "/api/agents/agent-1", expect.objectContaining({
+    method: "PATCH", body: JSON.stringify(settings),
+  }));
+});
+
 it("scopes schedule history and event cursors to the selected schedule and supports aborting navigation", async () => {
   const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
   vi.stubGlobal("fetch", fetch);

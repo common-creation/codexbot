@@ -2,6 +2,10 @@ export type RuntimeState = "stopped" | "starting" | "running" | "error";
 
 export type Permission = "auto" | "full-access";
 
+export interface IconUpload {
+  data: string;
+}
+
 export interface SidebarSection {
   id: string;
   name: string;
@@ -17,6 +21,7 @@ export interface SidebarLayout {
 export interface Agent {
   id: string;
   name: string;
+  iconUrl?: string;
   rolePrompt: string;
   model?: string;
   effort?: string;
